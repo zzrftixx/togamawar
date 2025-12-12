@@ -84,36 +84,104 @@ def render_dashboard():
         return
 
     # Tabs
-    tab1, tab2 = st.tabs(["Ringkasan Denda", "Detail Data"])
+    tab1, tab2 = st.tabs(["💰 Ringkasan Denda", "📅 Laporan Harian"])
     
     with tab1:
         # Group by Name and Sum Fine
         summary = df.groupby("name")[["fine"]].sum().sort_values("fine", ascending=False)
         st.subheader("Total Denda per Orang")
-        st.dataframe(summary, use_container_width=True)
+        
+        # Display as a clean table with index (Name) as a column
+        summary = summary.reset_index()
+        summary.columns = ["Nama", "Total Denda"]
+        
+        # Format currency for display
+        st.dataframe(
+            summary.style.format({"Total Denda": "Rp {:,.0f}"}), 
+            use_container_width=True,
+            hide_index=True
+        )
         
         total_fine = df["fine"].sum()
         st.metric("Total Uang Denda Bulan Ini", f"Rp {total_fine:,.0f}")
 
     with tab2:
-        st.subheader("Data Masuk")
-        # Display readable table
-        display_df = df[["week_number", "day_name", "name", "is_present", "notes", "fine"]]
-        display_df.columns = ["Minggu", "Hari", "Nama", "Hadir", "Keterangan", "Denda"]
-        st.dataframe(display_df, use_container_width=True)
+        st.subheader("Rekap Harian")
         
-        # Export logic
-        if st.download_button(
-            label="📥 Download Excel",
-            data=to_excel(display_df),
-            file_name=f"Laporan_TogaMawar_{selected_month_view}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        ):
-            st.success("File siap didownload!")
+        # Aggregate by Date/Day
+        if not df.empty:
+            daily_rows = []
+            # Group by date/day context
+            # We use date as primary key for day groups
+            groups = df.groupby(['date', 'week_number', 'day_name'])
+            
+            for (date, week, day), group in groups:
+                # Get absent people
+                absent_mask = ~group['is_present']
+                absent_df = group[absent_mask]
+                
+                absent_names = ", ".join(absent_df['name'].tolist()) if not absent_df.empty else "-"
+                
+                # Format notes: "Name (Note)"
+                notes_list = []
+                for _, row in absent_df.iterrows():
+                    if row['notes']:
+                        notes_list.append(f"{row['name']} ({row['notes']})")
+                
+                notes_str = "; ".join(notes_list) if notes_list else "-"
+                total_daily_fine = group['fine'].sum()
+                
+                daily_rows.append({
+                    "Tanggal": date,
+                    "Minggu Ke": week,
+                    "Hari": day,
+                    "Yang Tidak Hadir": absent_names,
+                    "Keterangan": notes_str,
+                    "Total Denda": total_daily_fine
+                })
+            
+            daily_df = pd.DataFrame(daily_rows)
+            
+            # Display nicely
+            st.dataframe(
+                daily_df.style.format({"Total Denda": "Rp {:,.0f}"}),
+                use_container_width=True,
+                hide_index=True
+            )
+            
+            # Export logic
+            if st.download_button(
+                label="📥 Download Laporan Excel (Lengkap)",
+                data=to_excel_improved(summary, daily_df),
+                file_name=f"Laporan_TogaMawar_{selected_month_view}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            ):
+                st.success("File siap didownload!")
+        else:
+            st.info("Belum ada data harian.")
 
-def to_excel(df):
+def to_excel_improved(summary_df, daily_df):
     from io import BytesIO
     output = BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False, sheet_name='Sheet1')
+        # Sheet 1: Ringkasan Denda
+        summary_df.to_excel(writer, index=False, sheet_name='Ringkasan Denda')
+        
+        # Sheet 2: Laporan Harian
+        daily_df.to_excel(writer, index=False, sheet_name='Laporan Harian')
+        
+        # Adjust column widths (Basic attempt)
+        for worksheet in writer.sheets.values():
+            for column in worksheet.columns:
+                max_length = 0
+                column = [cell for cell in column]
+                for cell in column:
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except:
+                        pass
+                adjusted_width = (max_length + 2)
+                worksheet.column_dimensions[column[0].column_letter].width = adjusted_width
+                
     return output.getvalue()
